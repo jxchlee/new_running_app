@@ -28,15 +28,20 @@ data class TrackPointRow(@PrimaryKey(autoGenerate = true) val id: Long = 0, val 
                          val fixId: Long, val segment: Int, val latitude: Double,
                          val longitude: Double, val elapsedMs: Long, val distanceM: Double)
 
+data class FixTimeRow(val id: Long, val fixElapsedMs: Long, val receivedWallMs: Long,
+                      val latitude: Double, val longitude: Double, val accuracyM: Float?, val speedMps: Float?)
+
 @Dao interface RunDao {
     @Query("SELECT * FROM runs ORDER BY id DESC") fun observeRuns(): Flow<List<RunRow>>
     @Query("SELECT * FROM runs WHERE id=:id") fun observeRun(id: Long): Flow<RunRow?>
     @Query("SELECT * FROM track_points WHERE runId=:id ORDER BY segment, elapsedMs, id") fun observePoints(id: Long): Flow<List<TrackPointRow>>
     @Query("SELECT * FROM raw_fixes WHERE runId=:id ORDER BY fixElapsedMs DESC, id DESC LIMIT 1") fun observeLatestFix(id: Long): Flow<RawFixRow?>
+    @Query("SELECT * FROM raw_fixes WHERE runId=:id ORDER BY fixElapsedMs, id") fun observeFixes(id: Long): Flow<List<RawFixRow>>
     @Query("SELECT * FROM pause_events WHERE runId=:id ORDER BY elapsedMs, id") fun observePauses(id: Long): Flow<List<PauseRow>>
     @Query("SELECT * FROM runs WHERE state IN ('running','paused') ORDER BY id DESC LIMIT 1") suspend fun active(): RunRow?
     @Query("SELECT * FROM runs WHERE id=:id") suspend fun getRun(id: Long): RunRow?
     @Query("SELECT * FROM raw_fixes WHERE runId=:id ORDER BY fixElapsedMs, id") suspend fun fixes(id: Long): List<RawFixRow>
+    @Query("SELECT id, fixElapsedMs, receivedWallMs, latitude, longitude, accuracyM, speedMps FROM raw_fixes WHERE runId=:id ORDER BY fixElapsedMs, id") suspend fun fixTimes(id: Long): List<FixTimeRow>
     @Query("SELECT * FROM pause_events WHERE runId=:id ORDER BY elapsedMs, id") suspend fun pauses(id: Long): List<PauseRow>
     @Insert suspend fun insertRun(row: RunRow): Long
     @Insert suspend fun insertFixes(rows: List<RawFixRow>)

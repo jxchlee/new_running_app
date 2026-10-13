@@ -57,23 +57,29 @@ class RunService : Service() {
     private suspend fun startRun() {
         if (runId != null) return
         db.dao().active()?.let { RunRepository.recover(db, it) }
-        val now = SystemClock.elapsedRealtime()
-        runId = db.dao().insertRun(RunRow(startedWallMs = System.currentTimeMillis(), startedElapsedMs = now))
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            finishRun()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
             return
         }
+        val now = SystemClock.elapsedRealtime()
+        runId = db.dao().insertRun(RunRow(startedWallMs = System.currentTimeMillis(), startedElapsedMs = now))
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
             .setMinUpdateIntervalMillis(1000L).setMaxUpdateDelayMillis(0L).build()
+        val id = runId ?: return
         callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val received = System.currentTimeMillis()
-                val batch = result.locations.map { it.toRaw(runId ?: return, received) }
-                scope.launch { lock.withLock { saveBatch(batch) } }
+                val batch = result.locations.map { it.toRaw(id, received) }
+                scope.launch(start = CoroutineStart.UNDISPATCHED) { lock.withLock { saveBatch(id, batch) } }
             }
         }
-        try { fused.requestLocationUpdates(request, callback!!, Looper.getMainLooper()) }
-        catch (_: SecurityException) { finishRun() }
+        try {
+            fused.requestLocationUpdates(request, callback!!, Looper.getMainLooper())
+                .addOnFailureListener {
+                    scope.launch { lock.withLock { if (runId == id) finishRun("failed") } }
+                }
+        } catch (_: SecurityException) { finishRun("failed") }
     }
 
     private fun Location.toRaw(id: Long, received: Long) = RawFixRow(runId = id, latitude = latitude,
@@ -81,9 +87,9 @@ class RunService : Service() {
         receivedWallMs = received, accuracyM = if (hasAccuracy()) accuracy else null,
         speedMps = if (hasSpeed()) speed else null, provider = provider)
 
-    private suspend fun saveBatch(batch: List<RawFixRow>) {
+    private suspend fun saveBatch(id: Long, batch: List<RawFixRow>) {
         if (batch.isEmpty()) return
-        val id = runId ?: return
+        if (runId != id) return
         val run = db.dao().getRun(id) ?: return
         if (run.state != "running" && run.state != "paused") return
         // Raw observations commit before any derived result is produced.
@@ -100,13 +106,13 @@ class RunService : Service() {
         RunRepository.replay(db, id)
     }
 
-    private suspend fun finishRun() {
+    private suspend fun finishRun(state: String = "finished") {
         val id = runId ?: return
         callback?.let { fused.removeLocationUpdates(it) }
         callback = null
         val run = db.dao().getRun(id) ?: return
         val end = SystemClock.elapsedRealtime()
-        RunRepository.replay(db, id, run.copy(state = "finished", endedWallMs = System.currentTimeMillis(),
+        RunRepository.replay(db, id, run.copy(state = state, endedWallMs = System.currentTimeMillis(),
             endedElapsedMs = end, currentPaceSecKm = null))
         runId = null
         stopForeground(STOP_FOREGROUND_REMOVE)

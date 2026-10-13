@@ -49,4 +49,29 @@ class TrackEngineTest {
         val stopped = moving + fix(5, 20, 127.00045)
         assertNull(TrackEngine().calculate(stopped, 0, null, emptyList()).recentPaceSecKm)
     }
+
+    @Test fun diagnosticReasonsDoNotChangeSavedCalculation() {
+        val fixes = listOf(fix(1, 0, 127.0), fix(2, 5, 127.0001),
+            fix(3, 10, 127.001, 100f), fix(4, 15, 127.01),
+            fix(5, 20, 127.0101), fix(6, 20, 127.5))
+        val engine = TrackEngine()
+        val normal = engine.calculate(fixes, 0, null, emptyList())
+        val diagnostic = engine.diagnose(fixes, 0, null, emptyList())
+        assertEquals(normal.points, diagnostic.points)
+        assertEquals(normal.distanceM, diagnostic.distanceM, 0.0001)
+        assertEquals(normal.measuredMs, diagnostic.measuredMs)
+        assertEquals(normal.gapCount, diagnostic.gapCount)
+        assertEquals(FixReason.POOR_ACCURACY, diagnostic.decisions.first { it.fixId == 3L }.reason)
+        assertEquals(FixReason.AFTER_REJECTION, diagnostic.decisions.first { it.fixId == 4L }.reason)
+        assertEquals(FixReason.DUPLICATE_TIME, diagnostic.decisions.first { it.fixId == 6L }.reason)
+        assertTrue(diagnostic.decisions.all { it.calculationVersion == TrackEngine.VERSION })
+    }
+
+    @Test fun diagnosticPreservesPauseAndTimeGapReasons() {
+        val fixes = listOf(fix(1, 0, 127.0), fix(2, 30, 127.001))
+        val result = TrackEngine().diagnose(fixes, 0, null, listOf(5_000L to 25_000L))
+        val second = result.decisions.first { it.fixId == 2L }
+        assertEquals(FixReason.AFTER_PAUSE, second.reason)
+        assertTrue(FixReason.FIX_TIME_GAP in second.additionalReasons)
+    }
 }

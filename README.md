@@ -2,6 +2,8 @@
 
 Android 달리기 기록 앱입니다. 경로 지도는 Google Maps SDK for Android를 사용합니다. 지도 표시와 위치 수집·원본 저장·거리 계산은 서로 독립적이므로, 지도 타일을 불러오지 못해도 기록은 계속됩니다.
 
+코드와 Git 저장소는 이 `code` 폴더에 있습니다. 작업 계획과 검증 보고서는 Git 저장소 밖의 `..\memo`에 보관합니다.
+
 ## Google 지도 설정
 
 1. [Google Cloud Console](https://console.cloud.google.com/)에서 프로젝트를 만들거나 선택하고 결제 계정을 연결합니다.
