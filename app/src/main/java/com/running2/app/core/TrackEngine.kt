@@ -14,15 +14,24 @@ enum class FixReason { DUPLICATE_TIME, OUTSIDE_RUN, PAUSED, INVALID_COORDINATES,
 data class FixDecision(val fixId: Long, val elapsedMs: Long, val reason: FixReason,
                        val segment: Int, val calculationVersion: Int,
                        val additionalReasons: Set<FixReason> = emptySet())
+/** Exactly one interval is emitted for each addition to measuredMs. */
+data class MeasuredInterval(val startFixId: Long, val endFixId: Long,
+                            val startMs: Long, val endMs: Long, val segment: Int,
+                            val distanceM: Double, val measuredMs: Long,
+                            val startLatitude: Double, val startLongitude: Double,
+                            val endLatitude: Double, val endLongitude: Double,
+                            val uncertainReasons: Set<FixReason> = emptySet())
 data class Result(val points: List<Point>, val distanceM: Double, val measuredMs: Long,
                   val gapCount: Int, val lastAcceptedMs: Long?, val recentPaceSecKm: Double?,
-                  val decisions: List<FixDecision> = emptyList())
+                  val decisions: List<FixDecision> = emptyList(),
+                  val intervals: List<MeasuredInterval> = emptyList())
 
 class TrackEngine(private val config: GateConfig = GateConfig()) {
     fun calculate(fixes: List<Fix>, startMs: Long, endMs: Long?, pauses: List<Pair<Long, Long?>>,
                   includeDecisions: Boolean = false): Result {
         val points = ArrayList<Point>()
         val decisions = ArrayList<FixDecision>()
+        val intervals = ArrayList<MeasuredInterval>()
         fun note(fix: Fix, reason: FixReason, segment: Int, additional: Set<FixReason> = emptySet()) {
             if (includeDecisions) decisions += FixDecision(fix.id, fix.elapsedMs, reason, segment, VERSION, additional)
         }
@@ -34,6 +43,7 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
         var lastAccepted: Long? = null
         var lastProcessed = Long.MIN_VALUE
         var pendingBreak: FixReason? = null
+        var skippedJump = false
         val moving = ArrayDeque<Pair<Long, Double>>()
         for (fix in fixes.sortedWith(compareBy(Fix::elapsedMs, Fix::id))) {
             if (fix.elapsedMs <= lastProcessed) { note(fix, FixReason.DUPLICATE_TIME, segment); continue }
@@ -44,6 +54,7 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
             if (pauses.any { pause -> fix.elapsedMs >= pause.first && (pause.second?.let { fix.elapsedMs < it } ?: true) }) {
                 anchor = null
                 pendingBreak = FixReason.AFTER_PAUSE
+                skippedJump = false
                 note(fix, FixReason.PAUSED, segment)
                 continue
             }
@@ -54,6 +65,7 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
             if (!valid) {
                 if (anchor != null) { gaps++; anchor = null }
                 pendingBreak = FixReason.AFTER_REJECTION
+                skippedJump = false
                 moving.clear()
                 note(fix, if (!coordinatesValid) FixReason.INVALID_COORDINATES else FixReason.POOR_ACCURACY, segment)
                 continue
@@ -71,6 +83,7 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
                 anchor = fix
                 lastAccepted = fix.elapsedMs
                 moving.clear()
+                skippedJump = false
                 note(fix, when {
                     previous == null -> pendingBreak ?: FixReason.SEGMENT_START
                     pauseBoundary -> FixReason.AFTER_PAUSE
@@ -84,11 +97,19 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
             if (delta / (dt / 1000.0) > config.maxSpeedMps || (fix.speedMps != null && fix.speedMps > config.maxSpeedMps * 1.5)) {
                 // Keep the last good anchor. A returning fix can establish continuity.
                 moving.clear()
+                skippedJump = true
                 note(fix, FixReason.IMPLAUSIBLE_JUMP, segment)
                 continue
             }
             measured += dt
             lastAccepted = fix.elapsedMs
+            val intervalDistance = if (delta < config.stationaryM) 0.0 else delta
+            intervals += MeasuredInterval(previous.id, fix.id, previous.elapsedMs, fix.elapsedMs,
+                segment, intervalDistance, dt, previous.latitude, previous.longitude,
+                if (intervalDistance == 0.0) previous.latitude else fix.latitude,
+                if (intervalDistance == 0.0) previous.longitude else fix.longitude,
+                if (skippedJump) setOf(FixReason.IMPLAUSIBLE_JUMP) else emptySet())
+            skippedJump = false
             if (delta < config.stationaryM) {
                 // Valid stationary time counts, but GPS wander must not draw a line or add distance.
                 anchor = fix.copy(latitude = previous.latitude, longitude = previous.longitude)
@@ -106,7 +127,7 @@ class TrackEngine(private val config: GateConfig = GateConfig()) {
         val recentMs = moving.sumOf { it.first }
         val recentM = moving.sumOf { it.second }
         val pace = if (moving.size >= 3 && recentM >= 30) recentMs / recentM else null
-        return Result(points, distance, measured, gaps, lastAccepted, pace, decisions)
+        return Result(points, distance, measured, gaps, lastAccepted, pace, decisions, intervals)
     }
 
     fun diagnose(fixes: List<Fix>, startMs: Long, endMs: Long?, pauses: List<Pair<Long, Long?>>): Result =
