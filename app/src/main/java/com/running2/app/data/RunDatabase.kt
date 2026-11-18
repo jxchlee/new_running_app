@@ -11,7 +11,8 @@ data class RunRow(@PrimaryKey(autoGenerate = true) val id: Long = 0,
                   val state: String = "running", val distanceM: Double = 0.0,
                   val measuredMs: Long = 0, val gapCount: Int = 0,
                   val currentPaceSecKm: Double? = null, val lastFixElapsedMs: Long? = null,
-                  val calculationVersion: Int = 1)
+                  /** New runs use the current engine; saved runs keep the version they were recorded with. */
+                  val calculationVersion: Int = com.running2.app.core.TrackEngine.VERSION)
 
 @Entity(tableName = "raw_fixes", indices = [Index("runId")])
 data class RawFixRow(@PrimaryKey(autoGenerate = true) val id: Long = 0, val runId: Long,

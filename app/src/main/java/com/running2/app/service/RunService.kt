@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.running2.app.MainActivity
+import com.running2.app.R
 import com.running2.app.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -49,7 +50,7 @@ class RunService : Service() {
         val pending = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, "running")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentTitle("Running2 기록 중")
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle("RunLite 기록 중")
             .setContentText("달리기 기록을 저장하고 있습니다").setContentIntent(pending).setOngoing(true).build()
         startForeground(10, notification)
     }

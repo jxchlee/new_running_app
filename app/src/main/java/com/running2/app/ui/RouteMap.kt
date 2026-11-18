@@ -7,15 +7,17 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.os.Looper
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,7 +35,9 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.GoogleMapOptions
 import com.google.android.gms.maps.MapView
+import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
@@ -86,14 +90,24 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
              startedWallMs: Long = 0, startedElapsedMs: Long = 0,
              focusBreakId: Int? = null, focusBout: ActivityBout? = null,
              focusRequest: Int = 0,
-             activityBouts: List<ActivityBout> = emptyList()) {
+             activityBouts: List<ActivityBout> = emptyList(),
+             topPaddingPx: Int = 0, bottomPaddingPx: Int = 0, overlayTop: Dp = 12.dp) {
     if (!BuildConfig.MAPS_CONFIGURED) {
         MapMessage(if (mode == RouteMapMode.HISTORY) "Google 지도 API 키 미설정 · 기록은 저장되어 있습니다" else "Google 지도 API 키 미설정 · 위치 기록은 계속됩니다", modifier)
         return
     }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val mapView = remember { runCatching { MapView(context) }.getOrNull() }
+    // Start the camera where the user last was (or at the route) so the first frame is never
+    // Google's default (0, 0) world view while waiting for a GPS fix.
+    val mapView = remember {
+        val start = if (mode == RouteMapMode.HISTORY) points.firstOrNull()?.let { LatLng(it.latitude, it.longitude) }
+            ?: LocationMemory.last(context) else LocationMemory.last(context)
+        runCatching {
+            if (start == null) MapView(context)
+            else MapView(context, GoogleMapOptions().camera(CameraPosition.fromLatLngZoom(start, 16f)))
+        }.getOrNull()
+    }
     var map by remember { mutableStateOf<GoogleMap?>(null) }
     var failed by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
@@ -146,7 +160,7 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
                 when (event) {
                     Lifecycle.Event.ON_START -> mapView.onStart()
                     Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                    Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                    Lifecycle.Event.ON_PAUSE -> { mapView.onPause(); LocationMemory.flush(context) }
                     Lifecycle.Event.ON_STOP -> mapView.onStop()
                     else -> Unit
                 }
@@ -172,17 +186,30 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
     DisposableEffect(mode, hasFinePermission, mapView) {
         if (mode == RouteMapMode.HISTORY || !hasFinePermission) return@DisposableEffect onDispose { }
         val client = LocationServices.getFusedLocationProviderClient(context)
+        var active = true
+        fun accept(location: Location) {
+            lastLocation = location
+            LocationMemory.update(context, location.latitude, location.longitude)
+        }
         val callback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) { result.lastLocation?.let { lastLocation = it } }
+            override fun onLocationResult(result: LocationResult) { result.lastLocation?.let(::accept) }
         }
         val started = runCatching {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                // The device's cached fix is usually available instantly; a fresh GPS fix replaces it.
+                client.lastLocation.addOnSuccessListener { cached ->
+                    if (active && cached != null && lastLocation == null) accept(cached)
+                }
                 val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L).build()
                 client.requestLocationUpdates(request, callback, Looper.getMainLooper())
             }
         }.isSuccess
         if (!started) failed = true
-        onDispose { client.removeLocationUpdates(callback) }
+        onDispose {
+            active = false
+            client.removeLocationUpdates(callback)
+            LocationMemory.flush(context)
+        }
     }
 
     LaunchedEffect(map, hasFinePermission, mode) {
@@ -191,6 +218,13 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
             ready.isMyLocationEnabled = hasFinePermission && mode != RouteMapMode.HISTORY
             ready.uiSettings.isMyLocationButtonEnabled = hasFinePermission && mode != RouteMapMode.HISTORY
         }.onFailure { failed = true }
+    }
+
+    // The sheet covers the bottom of the map; padding keeps the camera target in the visible part.
+    LaunchedEffect(map, topPaddingPx, bottomPaddingPx) {
+        val ready = map ?: return@LaunchedEffect
+        runCatching { ready.setPadding(0, topPaddingPx, 0, bottomPaddingPx) }
+        if (mode == RouteMapMode.HISTORY && !initialCenter) fitRequest++
     }
 
     LaunchedEffect(map, lastLocation, follow, mode) {
@@ -309,6 +343,8 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
         drawn.selectionLines.forEach { it.remove() }
         drawn.selectionLines.clear()
         val event = breaks.firstOrNull { it.id == focusBreakId }
+        // An explicit focus counts like a gesture: later sheet resizes must not refit over it.
+        if (event != null || focusBout != null) initialCenter = true
         if (event != null) {
             detailEvent = event
             val location = LatLng(event.before.latitude, event.before.longitude)
@@ -347,15 +383,18 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
             if (mapView.width > 0 && mapView.height > 0) return@repeat
             delay(100)
         }
-        if (mapView.width > 0 && mapView.height > 0) runCatching {
+        // With the sheet fully expanded almost nothing of the map is visible; fitting then would
+        // throw "View size is too small after padding". Skip it; the next resize refits.
+        val visible = mapView.height - topPaddingPx - bottomPaddingPx
+        if (mapView.width > 0 && visible > 240) runCatching {
             val coordinates = points.map { LatLng(it.latitude, it.longitude) }
             if (coordinates.size == 1 || coordinates.all { it == coordinates.first() }) {
                 ready.moveCamera(CameraUpdateFactory.newLatLngZoom(coordinates.first(), 16f))
             } else {
                 val bounds = LatLngBounds.builder().apply { coordinates.forEach(::include) }.build()
-                ready.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds, mapView.width, mapView.height, 80))
+                ready.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds, 80))
             }
-        }.onFailure { failed = true }
+        }
     }
 
     var tileTimedOut by remember { mutableStateOf(false) }
@@ -365,25 +404,42 @@ fun RouteMap(mode: RouteMapMode, points: List<TrackPointRow>, hasFinePermission:
     }
     Box(modifier) {
         AndroidView(factory = { mapView }, modifier = Modifier.matchParentSize())
-        if (mode == RouteMapMode.HISTORY) {
-            if (points.isEmpty()) Text("저장된 경로가 없습니다", Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp))
-            else Button(onClick = { fitRequest++ }, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) { Text("전체 경로 보기") }
-        } else if (hasFinePermission && lastLocation == null) {
-            Text("현재 위치 확인 중", Modifier.align(Alignment.TopStart).background(MaterialTheme.colorScheme.surface).padding(8.dp))
-        }
-        if (tileTimedOut) Text(if (mode == RouteMapMode.HISTORY) "지도 타일을 불러오지 못했습니다 · 기록은 저장되어 있습니다" else "지도 타일을 불러오지 못했습니다 · 위치 기록은 계속됩니다", Modifier.align(Alignment.BottomCenter).background(MaterialTheme.colorScheme.surface).padding(8.dp))
-        if (mode == RouteMapMode.HISTORY) detailEvent?.let { event ->
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .padding(12.dp).background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
-                Text("끊긴 구간 · ${event.causes.joinToString(" · ") { breakCauseName(it) }}")
-                Text("마지막 ${routeTime(startedWallMs, startedElapsedMs, event.startMs)} · " +
-                    (if (event.after == null) "재시작 지점 없음" else
-                        "재시작 ${routeTime(startedWallMs, startedElapsedMs, event.endMs)}"))
-                Text((if (event.after == null) "마지막 경로점 이후 종료까지 " else "표시 경로 사이의 시간 ") +
-                    routeDuration(event.endMs - event.startMs))
-                TextButton(onClick = { detailEvent = null }) { Text("닫기") }
+        // History keeps its own buttons on the top row, so its chips start one row lower.
+        val chipsTop = if (mode == RouteMapMode.HISTORY) overlayTop + 56.dp else overlayTop
+        // Live/preview maps show Google's my-location button at the top right; keep chips clear of it.
+        val chipsSide = if (mode == RouteMapMode.HISTORY) 12.dp else 64.dp
+        Column(Modifier.align(Alignment.TopCenter).padding(top = chipsTop, start = chipsSide, end = chipsSide),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            if (mode != RouteMapMode.HISTORY && hasFinePermission && lastLocation == null) MapChip("현재 위치 확인 중")
+            if (tileTimedOut) MapChip(if (mode == RouteMapMode.HISTORY) "지도 타일을 불러오지 못했습니다 · 기록은 저장되어 있습니다" else "지도 타일을 불러오지 못했습니다 · 위치 기록은 계속됩니다")
+            if (mode == RouteMapMode.HISTORY && points.isEmpty()) MapChip("저장된 경로가 없습니다")
+            if (mode == RouteMapMode.HISTORY) detailEvent?.let { event ->
+                Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 8.dp)) {
+                        Text("끊긴 구간 · ${event.causes.joinToString(" · ") { breakCauseName(it) }}",
+                            style = MaterialTheme.typography.titleSmall)
+                        Text("마지막 ${routeTime(startedWallMs, startedElapsedMs, event.startMs)} · " +
+                            (if (event.after == null) "재시작 지점 없음" else
+                                "재시작 ${routeTime(startedWallMs, startedElapsedMs, event.endMs)}"),
+                            style = MaterialTheme.typography.bodyMedium)
+                        Text((if (event.after == null) "마지막 경로점 이후 종료까지 " else "끊긴 시간 ") +
+                            routeDuration(event.endMs - event.startMs), style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { detailEvent = null }, modifier = Modifier.align(Alignment.End)) { Text("닫기") }
+                    }
+                }
             }
         }
+        if (mode == RouteMapMode.HISTORY && points.isNotEmpty()) FilledTonalButton(onClick = { fitRequest++ },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = overlayTop, end = 12.dp)) { Text("전체 경로") }
+    }
+}
+
+@Composable
+private fun MapChip(text: String) {
+    Surface(shape = RoundedCornerShape(50), tonalElevation = 3.dp, shadowElevation = 2.dp,
+        modifier = Modifier.padding(bottom = 6.dp)) {
+        Text(text, Modifier.padding(horizontal = 14.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
     }
 }
 

@@ -40,7 +40,7 @@ class RunAnalysisTest {
             Fix(3, 2000, 38.0, 127.0, 5f, null), // impossible jump, discarded
             Fix(4, 3000, 37.00014, 127.0, 5f, null),
             Fix(5, 25_000, 37.00021, 127.0, 5f, null))
-        val result = TrackEngine().diagnose(fixes, 0, 25_000, emptyList())
+        val result = TrackEngine(version = 1).diagnose(fixes, 0, 25_000, emptyList())
         val analysis = RunAnalysisEngine.analyze(result,
             fixes.map { ObservedFix(it.id, it.elapsedMs, it.elapsedMs) }, emptyList(),
             result.distanceM, result.measuredMs, 25_000)
@@ -90,7 +90,7 @@ class RunAnalysisTest {
             Fix(2, 1000, 37.00007, 127.0, 5f, null),
             Fix(3, 2000, 37.00014, 127.0, 150f, null),
             Fix(4, 3000, 37.00021, 127.0, 5f, null))
-        val result = TrackEngine().diagnose(fixes, 0, 3000, emptyList())
+        val result = TrackEngine(version = 1).diagnose(fixes, 0, 3000, emptyList())
         val analysis = RunAnalysisEngine.analyze(result,
             fixes.map { ObservedFix(it.id, it.elapsedMs, it.elapsedMs) }, emptyList(),
             result.distanceM, result.measuredMs, 3000)
@@ -116,7 +116,7 @@ class RunAnalysisTest {
         val fixes = listOf(Fix(1, 0, 37.0, 127.0, 5f, null),
             Fix(2, 1000, 37.00007, 127.0, 5f, null),
             Fix(3, 2000, 37.00014, 127.0, 150f, null))
-        val result = TrackEngine().diagnose(fixes, 0, 3000, emptyList())
+        val result = TrackEngine(version = 1).diagnose(fixes, 0, 3000, emptyList())
         val analysis = RunAnalysisEngine.analyze(result,
             fixes.map { ObservedFix(it.id, it.elapsedMs, it.elapsedMs) }, emptyList(),
             result.distanceM, result.measuredMs, 3000)
@@ -124,6 +124,49 @@ class RunAnalysisTest {
         assertEquals(2L, analysis.breaks.single().before.fixId)
         assertNull(analysis.breaks.single().after)
         assertEquals(BreakCause.POOR_ACCURACY, analysis.breaks.single().primaryCause)
+    }
+
+    private fun analyzeV2(fixes: List<Fix>, endMs: Long): Pair<Result, RunAnalysis> {
+        val result = TrackEngine().diagnose(fixes, 0, endMs, emptyList())
+        return result to RunAnalysisEngine.analyze(result,
+            fixes.map { ObservedFix(it.id, it.elapsedMs, it.elapsedMs) }, emptyList(),
+            result.distanceM, result.measuredMs, endMs)
+    }
+
+    @Test fun v2ShortGapsLeaveNoBreakAndStayOutOfActivityLabels() {
+        val gap = listOf(Fix(1, 0, 37.0, 127.0, 5f, null), Fix(2, 1000, 37.00007, 127.0, 5f, null),
+            Fix(3, 3000, 37.00014, 127.0, 5f, null), Fix(4, 25_000, 37.00021, 127.0, 5f, null))
+        val (gapResult, gapAnalysis) = analyzeV2(gap, 25_000)
+        assertTrue(gapAnalysis.breaks.isEmpty())
+        assertEquals(25_000, gapResult.measuredMs)
+        assertTrue(gapAnalysis.bouts.any { it.kind == ActivityKind.UNKNOWN && it.endMs == 25_000L })
+
+        val poor = listOf(Fix(1, 0, 37.0, 127.0, 5f, null), Fix(2, 1000, 37.00007, 127.0, 5f, null),
+            Fix(3, 2000, 37.00014, 127.0, 150f, null), Fix(4, 3000, 37.00021, 127.0, 5f, null))
+        val (poorResult, poorAnalysis) = analyzeV2(poor, 3000)
+        assertTrue(poorAnalysis.breaks.isEmpty())
+        assertEquals(poorResult.distanceM, poorAnalysis.totals.values.sumOf { it.distanceM }, 0.000001)
+    }
+
+    @Test fun v2IgnoresBriefTrailingPoorAccuracyButKeepsLongTail() {
+        val brief = listOf(Fix(1, 0, 37.0, 127.0, 5f, null), Fix(2, 1000, 37.00007, 127.0, 5f, null),
+            Fix(3, 2000, 37.00014, 127.0, 150f, null))
+        assertTrue(analyzeV2(brief, 3000).second.breaks.isEmpty())
+        val long = brief + Fix(4, 20_000, 37.0002, 127.0, 150f, null)
+        val tail = analyzeV2(long, 30_000).second.breaks.single()
+        assertNull(tail.after)
+        assertTrue(BreakCause.POOR_ACCURACY in tail.causes)
+    }
+
+    @Test fun v2StationaryBridgeBeforeFinishLeavesNoFalseTailBreak() {
+        // Standing still at the end: two bad fixes, then a good one bridged as stationary (no new point).
+        val fixes = listOf(Fix(1, 0, 37.0, 127.0, 5f, null), Fix(2, 10_000, 37.0002, 127.0, 5f, null),
+            Fix(3, 12_000, 37.0002, 127.0, 90f, null), Fix(4, 14_000, 37.0002, 127.0, 90f, null),
+            Fix(5, 16_000, 37.00021, 127.0, 5f, null))
+        // Ends 14 s after the last raw fix (no raw silence) but 20 s after the last drawn point.
+        val (result, analysis) = analyzeV2(fixes, 30_000)
+        assertEquals(16_000L, result.lastAcceptedMs)
+        assertTrue(analysis.breaks.isEmpty())
     }
 
     @Test fun sameActivityCanResumeAfterUnknownWithoutStaleCandidate() {

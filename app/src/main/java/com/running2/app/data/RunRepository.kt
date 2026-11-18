@@ -8,10 +8,9 @@ import com.running2.app.core.TrackEngine
 object RunRepository {
     suspend fun replay(db: RunDatabase, id: Long, finalState: RunRow? = null) {
         val run = finalState ?: db.dao().getRun(id) ?: return
-        require(run.calculationVersion == TrackEngine.VERSION) { "Unsupported calculation version: ${run.calculationVersion}" }
         val intervals = pauseIntervals(db.dao().pauses(id))
         val fixes = db.dao().fixes(id).map { Fix(it.id, it.fixElapsedMs, it.latitude, it.longitude, it.accuracyM, it.speedMps) }
-        val result = TrackEngine().calculate(fixes, run.startedElapsedMs, run.endedElapsedMs, intervals)
+        val result = TrackEngine(version = run.calculationVersion).calculate(fixes, run.startedElapsedMs, run.endedElapsedMs, intervals)
         db.withTransaction {
             db.dao().clearPoints(id)
             db.dao().insertPoints(result.points.map { TrackPointRow(runId = id, fixId = it.fixId,
@@ -26,9 +25,8 @@ object RunRepository {
     /** Read-only replay; a stored calculation is never replaced by diagnostics. */
     suspend fun diagnose(db: RunDatabase, id: Long): Result? {
         val run = db.dao().getRun(id) ?: return null
-        require(run.calculationVersion == TrackEngine.VERSION) { "Unsupported calculation version: ${run.calculationVersion}" }
         val fixes = db.dao().fixes(id).map { Fix(it.id, it.fixElapsedMs, it.latitude, it.longitude, it.accuracyM, it.speedMps) }
-        return TrackEngine().diagnose(fixes, run.startedElapsedMs, run.endedElapsedMs,
+        return TrackEngine(version = run.calculationVersion).diagnose(fixes, run.startedElapsedMs, run.endedElapsedMs,
             pauseIntervals(db.dao().pauses(id)))
     }
 

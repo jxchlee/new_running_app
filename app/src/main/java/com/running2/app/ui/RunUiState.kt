@@ -4,9 +4,6 @@ import com.running2.app.data.PauseRow
 import com.running2.app.data.FixTimeRow
 import com.running2.app.data.RawFixRow
 import com.running2.app.data.RunRow
-import com.running2.app.core.Fix
-import com.running2.app.core.FixReason
-import com.running2.app.core.TrackEngine
 
 private const val SIGNAL_TIMEOUT_MS = 15_000L
 
@@ -21,13 +18,11 @@ data class RunUiState(
     val rawGapCount: Int,
     val deliveryGapCount: Int,
     val routeGapCount: Int,
-    val incomplete: Boolean,
     val latestAccuracyM: Float?
 )
 
 /** Values on every screen come from the saved run and its versioned v1 track points. */
-fun runUiState(run: RunRow, fixes: List<RawFixRow>, pauses: List<PauseRow>, nowMs: Long,
-               excludedFixes: Boolean? = null): RunUiState {
+fun runUiState(run: RunRow, fixes: List<RawFixRow>, pauses: List<PauseRow>, nowMs: Long): RunUiState {
     val live = run.state == "running" || run.state == "paused"
     val endMs = if (live) nowMs else run.endedElapsedMs ?: run.startedElapsedMs
     val elapsedMs = (endMs - run.startedElapsedMs).coerceAtLeast(0)
@@ -46,7 +41,6 @@ fun runUiState(run: RunRow, fixes: List<RawFixRow>, pauses: List<PauseRow>, nowM
         .sortedWith(compareBy(RawFixRow::fixElapsedMs, RawFixRow::id))
     val samples = ordered.map { FixTimeRow(it.id, it.fixElapsedMs, it.receivedWallMs, it.latitude, it.longitude, it.accuracyM, it.speedMps) }
     val (rawGaps, deliveryGaps) = gapCounts(run, samples, pauses, endMs)
-    val rejected = excludedFixes ?: hasExcludedActiveFix(run, samples, pauses)
     val latest = ordered.lastOrNull()
     val rawFresh = latest != null && live && nowMs - latest.fixElapsedMs in 0..SIGNAL_TIMEOUT_MS
     val acceptedFresh = latest != null && run.lastFixElapsedMs != null &&
@@ -68,28 +62,8 @@ fun runUiState(run: RunRow, fixes: List<RawFixRow>, pauses: List<PauseRow>, nowM
         rawGapCount = rawGaps,
         deliveryGapCount = deliveryGaps,
         routeGapCount = run.gapCount,
-        incomplete = rawGaps > 0 || deliveryGaps > 0 || rejected,
         latestAccuracyM = latest?.accuracyM
     )
-}
-
-fun hasExcludedActiveFix(run: RunRow, samples: List<FixTimeRow>, pauses: List<PauseRow>): Boolean {
-    if (run.calculationVersion != TrackEngine.VERSION) return true
-    val intervals = ArrayList<Pair<Long, Long?>>()
-    var opened: Long? = null
-    for (event in pauses) {
-        if (event.kind == "pause") opened = event.elapsedMs
-        else if (event.kind == "resume" && opened != null) {
-            intervals += opened to event.elapsedMs
-            opened = null
-        }
-    }
-    if (opened != null) intervals += opened to null
-    val fixes = samples.map { Fix(it.id, it.fixElapsedMs, it.latitude, it.longitude, it.accuracyM, it.speedMps) }
-    return TrackEngine().diagnose(fixes, run.startedElapsedMs, run.endedElapsedMs, intervals).decisions.any {
-        it.reason == FixReason.POOR_ACCURACY || it.reason == FixReason.INVALID_COORDINATES ||
-            it.reason == FixReason.IMPLAUSIBLE_JUMP
-    }
 }
 
 fun gapCounts(run: RunRow, times: List<FixTimeRow>, pauses: List<PauseRow>, endMs: Long): Pair<Int, Int> {

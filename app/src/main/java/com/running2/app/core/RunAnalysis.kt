@@ -43,8 +43,8 @@ object RunAnalysisEngine {
 
     fun analyze(result: Result, raw: List<ObservedFix>, pauses: List<Pair<Long, Long?>>,
                 storedDistanceM: Double, storedMeasuredMs: Long, runEndMs: Long?): RunAnalysis {
-        require(abs(result.distanceM - storedDistanceM) <= 1e-4) { "Stored distance differs from v1 replay" }
-        require(result.measuredMs == storedMeasuredMs) { "Stored measured time differs from v1 replay" }
+        require(abs(result.distanceM - storedDistanceM) <= 1e-4) { "Stored distance differs from replay" }
+        require(result.measuredMs == storedMeasuredMs) { "Stored measured time differs from replay" }
         require(abs(result.intervals.sumOf { it.distanceM } - result.distanceM) <= 1e-4)
         require(result.intervals.sumOf { it.measuredMs } == result.measuredMs)
         val labels = classify(result.intervals)
@@ -55,7 +55,7 @@ object RunAnalysisEngine {
         }
         require(abs(totals.values.sumOf { it.distanceM } - storedDistanceM) <= 1e-4)
         require(totals.values.sumOf { it.measuredMs } == storedMeasuredMs)
-        return RunAnalysis(VERSION, TrackEngine.VERSION, result.intervals, bouts, totals,
+        return RunAnalysis(VERSION, result.calculationVersion, result.intervals, bouts, totals,
             breaks(result, raw, pauses, runEndMs))
     }
 
@@ -218,11 +218,18 @@ object RunAnalysisEngine {
         }
         val lastPoint = result.points.lastOrNull()
         if (lastPoint != null && runEndMs != null && runEndMs > lastPoint.elapsedMs) {
-            val trailing = result.decisions.any { it.elapsedMs > lastPoint.elapsedMs &&
+            // v2 can accept a fix without adding a point (bridged or stationary), so the trailing
+            // stretch starts at the last accepted fix, not at the last drawn point.
+            val trailingFrom = if (result.calculationVersion >= 2) result.lastAcceptedMs ?: lastPoint.elapsedMs
+                else lastPoint.elapsedMs
+            val trailing = result.decisions.any { it.elapsedMs > trailingFrom &&
                 (it.reason == FixReason.POOR_ACCURACY || it.reason == FixReason.INVALID_COORDINATES) }
             val lastRaw = orderedRaw.lastOrNull { it.elapsedMs <= runEndMs }
             val activeSilence = if (lastRaw != null) longestActiveSpan(lastRaw.elapsedMs, runEndMs, pauses) > MAX_RAW_GAP_MS else false
-            if (trailing || activeSilence) events += breakEvent(events.size + 1, lastPoint, null,
+            // v2: a few rejected fixes just before finishing are not worth a break marker.
+            val trailingCounts = trailing && (result.calculationVersion < 2 ||
+                longestActiveSpan(trailingFrom, runEndMs, pauses) > MAX_RAW_GAP_MS)
+            if (trailingCounts || activeSilence) events += breakEvent(events.size + 1, lastPoint, null,
                 result, orderedRaw, pauses, runEndMs)
         }
         return events
@@ -254,7 +261,7 @@ object RunAnalysisEngine {
         }
         if (causes.isEmpty()) causes += BreakCause.UNKNOWN
         return BreakEvent(id, before, after, causes, before.elapsedMs, end, maxRawGap,
-            maxDeliveryGap, TrackEngine.VERSION)
+            maxDeliveryGap, result.calculationVersion)
     }
 
     private fun longestActiveSpan(from: Long, to: Long, pauses: List<Pair<Long, Long?>>): Long {
