@@ -14,7 +14,9 @@ android {
     namespace = "com.running2.app"
     compileSdk = 34
     defaultConfig {
-        applicationId = "com.running2.app"
+        // Published package name on Google Play; permanent once released. The Kotlin
+        // namespace above stays com.running2.app (internal only).
+        applicationId = "io.github.jxchlee.runlite"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

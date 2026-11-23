@@ -9,7 +9,7 @@ Android 달리기 기록 앱입니다. 경로 지도는 Google Maps SDK for Andr
 1. [Google Cloud Console](https://console.cloud.google.com/)에서 프로젝트를 만들거나 선택하고 결제 계정을 연결합니다.
 2. 해당 프로젝트에서 **Maps SDK for Android**를 활성화합니다.
 3. API 키를 만들고 API 제한을 **Maps SDK for Android**로 설정합니다.
-4. 애플리케이션 제한을 **Android 앱**으로 설정합니다. 이 앱의 패키지 이름은 `com.running2.app`입니다. 개발 APK에는 로컬 디버그 서명 인증서의 SHA-1 지문을 등록하고, 출시 APK에는 출시 서명 인증서의 SHA-1 지문을 별도로 등록합니다. `gradlew.bat signingReport`에서 현재 디버그 SHA-1을 확인할 수 있습니다.
+4. 애플리케이션 제한을 **Android 앱**으로 설정합니다. 이 앱의 패키지 이름은 `io.github.jxchlee.runlite`입니다. 개발 APK에는 로컬 디버그 서명 인증서의 SHA-1 지문을 등록하고, 출시 APK에는 출시 서명 인증서의 SHA-1 지문을 별도로 등록합니다. `gradlew.bat signingReport`에서 현재 디버그 SHA-1을 확인할 수 있습니다.
 5. Git에 포함되지 않는 루트 `local.properties`에 `MAPS_API_KEY=발급받은_키`를 추가하고 다시 빌드·설치합니다. `local.properties.example`은 형식 예시입니다.
 
 기본 지도에는 **지도 ID가 필요하지 않습니다**. API 키가 없으면 지도 영역에 설정 안내가 나오며 달리기 기록은 계속 사용할 수 있습니다. API 키는 빌드된 앱에 포함되므로 Android 패키지·서명 지문과 API 제한을 반드시 적용하세요.
