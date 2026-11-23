@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,7 +53,16 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             if (!RunService.isAlive) db.dao().active()?.let { RunRepository.recover(db, it) }
         }
-        setContent { RunLiteTheme { Surface(Modifier.fillMaxSize()) { RunningApp(db, ::command) } } }
+        // targetSdk 35+ always draws behind the system bars. Keep the app's layout inside them
+        // (as it was before) and let enableEdgeToEdge pick readable bar icon colours.
+        enableEdgeToEdge()
+        setContent {
+            RunLiteTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) { RunningApp(db, ::command) }
+                }
+            }
+        }
     }
 
     private fun command(action: String) {
@@ -134,7 +144,12 @@ private fun RunningApp(db: RunDatabase, command: (String) -> Unit) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
-    val requestPermission = { permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
+    val requestPermission = {
+        val wanted = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        // Android 13+ hides the "recording" notification unless this is granted; the run still records without it.
+        if (android.os.Build.VERSION.SDK_INT >= 33) wanted += Manifest.permission.POST_NOTIFICATIONS
+        permission.launch(wanted.toTypedArray())
+    }
     val stateKey = listOf<Any?>(selected, fixes.size, fixes.lastOrNull()?.id,
         pauses.size, pauses.lastOrNull()?.id, if (active != null) tick else null)
     var state by remember(runId) { mutableStateOf<Pair<List<Any?>, RunUiState>?>(null) }
