@@ -10,7 +10,27 @@ val localSettings = Properties().apply {
     if (file.exists()) file.inputStream().use { load(it) }
 }
 val mapsApiKey = localSettings.getProperty("MAPS_API_KEY", "").trim()
+// Release signing reads the upload key from keystore.properties (git-ignored, never committed).
+val keystoreSettings = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
 android {
+    signingConfigs {
+        val storeFile = keystoreSettings.getProperty("storeFile")?.trim()
+        if (!storeFile.isNullOrEmpty()) create("release") {
+            this.storeFile = file(storeFile)
+            storePassword = keystoreSettings.getProperty("storePassword")
+            keyAlias = keystoreSettings.getProperty("keyAlias")
+            keyPassword = keystoreSettings.getProperty("keyPassword")
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
     namespace = "com.running2.app"
     compileSdk = 34
     defaultConfig {
